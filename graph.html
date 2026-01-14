@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>work.ua site graph</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0f14; }
+    #graph { width: 100%; height: 100%; }
+    #hud{
+      position: absolute; left: 12px; top: 12px; z-index: 10;
+      background: rgba(0,0,0,.55); color: #fff; padding: 10px 12px;
+      font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      border-radius: 12px; max-width: 520px;
+      backdrop-filter: blur(6px);
+    }
+    #hud b { font-weight: 700; }
+    #hud code{ color:#9bd }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;}
+    .pill { padding:4px 8px; border-radius: 999px; background: rgba(255,255,255,.08); cursor:pointer; user-select:none; }
+    .pill input { vertical-align: middle; }
+    .small { opacity:.85; font-size: 12px; }
+    #search { width: 260px; max-width: 60vw; padding: 6px 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.35); color: #fff; }
+    #btn { padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color:#fff; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>work.ua graph</b> — drag rotate, scroll zoom</div>
+    <div class="small">Click = focus, right-click = open URL</div>
+    <div id="stats" class="row small"></div>
+
+    <div class="row">
+      <input id="search" placeholder="Find URL contains... (e.g. /articles/)" />
+      <button id="btn">Focus</button>
+      <button id="btn" onclick="resetView()">Reset</button>
+    </div>
+
+    <div class="row small" id="filters"></div>
+    <div id="sel" class="small" style="margin-top:8px;"></div>
+  </div>
+
+  <div id="graph"></div>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+
+  <script>
+    const stats = document.getElementById('stats');
+    const sel = document.getElementById('sel');
+    const filtersEl = document.getElementById('filters');
+    const searchEl = document.getElementById('search');
+    const btn = document.getElementById('btn');
+
+    // Разделы + правило определения + цвета
+    const SECTIONS = [
+      {key:'jobs',     label:'/jobs',     test:(u)=>u.includes('/jobs'),     color:0x4cc9f0},
+      {key:'articles', label:'/articles', test:(u)=>u.includes('/articles'), color:0xf72585},
+      {key:'news',     label:'/news',     test:(u)=>u.includes('/news'),     color:0xfee440},
+      {key:'employer', label:'/employer', test:(u)=>u.includes('/employer'), color:0x80ed99},
+      {key:'other',    label:'other',     test:(u)=>true,                    color:0xbdb2ff}
+    ];
+
+    // включенные фильтры (по умолчанию всё)
+    const enabled = new Set(SECTIONS.map(s=>s.key));
+
+    function sectionOf(url){
+      for (const s of SECTIONS){
+        if (s.key === 'other') continue;
+        if (s.test(url)) return s.key;
+      }
+      return 'other';
+    }
+
+    function colorOf(sectionKey){
+      const s = SECTIONS.find(x=>x.key===sectionKey) || SECTIONS[SECTIONS.length-1];
+      return s.color;
+    }
+
+    function renderFilters(){
+      filtersEl.innerHTML = '';
+      for (const s of SECTIONS){
+        const id = `f_${s.key}`;
+        const checked = enabled.has(s.key) ? 'checked' : '';
+        const wrap = document.createElement('label');
+        wrap.className = 'pill';
+        wrap.innerHTML = `<input type="checkbox" id="${id}" ${checked}/> ${s.label}`;
+        wrap.querySelector('input').addEventListener('change', (e)=>{
+          if (e.target.checked) enabled.add(s.key);
+          else enabled.delete(s.key);
+          applyFilter();
+        });
+        filtersEl.appendChild(wrap);
+      }
+    }
+
+    let fullData = null;
+
+    const Graph = ForceGraph3D()(document.getElementById('graph'))
+      .backgroundColor('#0b0f14')
+      .nodeLabel(n => `${n.section}\n${n.id}`)   // tooltip: раздел + url
+      .nodeThreeObject(node => {
+        // маленькая сфера
+        const geo = new THREE.SphereGeometry(2.0, 10, 10);
+        const mat = new THREE.MeshBasicMaterial({ color: colorOf(node.section) });
+        return new THREE.Mesh(geo, mat);
+      })
+      .linkOpacity(0.12)
+      .linkDirectionalParticles(0)
+      .onNodeClick(node => focusNode(node))
+      .onNodeRightClick(node => window.open(node.id, '_blank'));
+
+    function focusNode(node){
+      const distance = 140;
+      const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z);
+      Graph.cameraPosition(
+        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
+        node,
+        800
+      );
+      sel.innerHTML = `Selected: <code>${node.id}</code> <span style="opacity:.8">(${node.section})</span>`;
+    }
+
+    function resetView(){
+      sel.innerHTML = '';
+      searchEl.value = '';
+      enabled.clear();
+      SECTIONS.forEach(s=>enabled.add(s.key));
+      renderFilters();
+      if (fullData) Graph.graphData(fullData);
+    }
+    window.resetView = resetView;
+
+    function applyFilter(){
+      if (!fullData) return;
+      const okNode = (n)=> enabled.has(n.section);
+
+      // фильтруем узлы
+      const nodes = fullData.nodes.filter(okNode);
+      const nodeSet = new Set(nodes.map(n=>n.id));
+
+      // фильтруем связи по существующим узлам
+      const links = fullData.links.filter(l => nodeSet.has(l.source) && nodeSet.has(l.target));
+
+      Graph.graphData({nodes, links});
+      stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
+    }
+
+    function findAndFocus(substr){
+      if (!fullData) return;
+      const q = (substr || '').trim().toLowerCase();
+      if (!q) return;
+
+      const node = fullData.nodes.find(n => n.id.toLowerCase().includes(q));
+      if (!node) {
+        sel.innerHTML = `Not found: <code>${q}</code>`;
+        return;
+      }
+
+      // включим нужный раздел, чтобы он точно был виден
+      enabled.add(node.section);
+      renderFilters();
+      applyFilter();
+
+      // после фильтра нужно взять текущий объект ноды (граф пересобран)
+      const cur = Graph.graphData().nodes.find(n => n.id === node.id);
+      if (cur) focusNode(cur);
+    }
+
+    btn.addEventListener('click', ()=> findAndFocus(searchEl.value));
+    searchEl.addEventListener('keydown', (e)=>{
+      if (e.key === 'Enter') findAndFocus(searchEl.value);
+    });
+
+    fetch('./graph.json')
+      .then(r => r.json())
+      .then(data => {
+        // Добавим поле section всем узлам
+        data.nodes.forEach(n => n.section = sectionOf(n.id));
+
+        // Для удобства links должны быть строками (source/target)
+        // (у тебя они уже строки — отлично)
+        fullData = data;
+
+        // стартовые метрики
+        stats.innerHTML = `Loaded: <b>${data.nodes.length}</b> nodes | <b>${data.links.length}</b> links`;
+        renderFilters();
+        Graph.graphData(data);
+
+        // чуть стабильнее раскладка
+        Graph.d3Force('charge').strength(-55);
+        Graph.d3Force('link').distance(26);
+      })
+      .catch(err => {
+        stats.innerHTML = 'Failed to load graph.json';
+        console.error(err);
+      });
+  </script>
+</body>
+</html>
