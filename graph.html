@@ -10,29 +10,37 @@
       position: absolute; left: 12px; top: 12px; z-index: 10;
       background: rgba(0,0,0,.55); color: #fff; padding: 10px 12px;
       font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      border-radius: 12px; max-width: 520px;
-      backdrop-filter: blur(6px);
+      border-radius: 12px; max-width: 720px; backdrop-filter: blur(6px);
     }
-    #hud b { font-weight: 700; }
-    #hud code{ color:#9bd }
     .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;}
     .pill { padding:4px 8px; border-radius: 999px; background: rgba(255,255,255,.08); cursor:pointer; user-select:none; }
     .pill input { vertical-align: middle; }
     .small { opacity:.85; font-size: 12px; }
     #search { width: 260px; max-width: 60vw; padding: 6px 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.35); color: #fff; }
-    #btn { padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color:#fff; cursor:pointer; }
+    .btn { padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color:#fff; cursor:pointer; }
+    .btn:active { transform: translateY(1px); }
   </style>
 </head>
 <body>
   <div id="hud">
     <div><b>work.ua graph</b> — drag rotate, scroll zoom</div>
     <div class="small">Click = focus, right-click = open URL</div>
+
     <div id="stats" class="row small"></div>
 
     <div class="row">
       <input id="search" placeholder="Find URL contains... (e.g. /articles/)" />
-      <button id="btn">Focus</button>
-      <button id="btn" onclick="resetView()">Reset</button>
+      <button class="btn" id="btnFocus">Focus</button>
+      <button class="btn" id="btnReset">Reset</button>
+    </div>
+
+    <div class="row">
+      <button class="btn" id="btnAll">All</button>
+      <button class="btn" id="btnJobs">Only /jobs</button>
+      <button class="btn" id="btnArticles">Only /articles</button>
+      <button class="btn" id="btnNews">Only /news</button>
+      <button class="btn" id="btnEmployer">Only /employer</button>
+      <button class="btn" id="btnHubs">Hubs top 5%</button>
     </div>
 
     <div class="row small" id="filters"></div>
@@ -49,9 +57,17 @@
     const sel = document.getElementById('sel');
     const filtersEl = document.getElementById('filters');
     const searchEl = document.getElementById('search');
-    const btn = document.getElementById('btn');
 
-    // Разделы + правило определения + цвета
+    const btnFocus = document.getElementById('btnFocus');
+    const btnReset = document.getElementById('btnReset');
+    const btnAll = document.getElementById('btnAll');
+    const btnJobs = document.getElementById('btnJobs');
+    const btnArticles = document.getElementById('btnArticles');
+    const btnNews = document.getElementById('btnNews');
+    const btnEmployer = document.getElementById('btnEmployer');
+    const btnHubs = document.getElementById('btnHubs');
+
+    // Разделы + цвета
     const SECTIONS = [
       {key:'jobs',     label:'/jobs',     test:(u)=>u.includes('/jobs'),     color:0x4cc9f0},
       {key:'articles', label:'/articles', test:(u)=>u.includes('/articles'), color:0xf72585},
@@ -60,8 +76,8 @@
       {key:'other',    label:'other',     test:(u)=>true,                    color:0xbdb2ff}
     ];
 
-    // включенные фильтры (по умолчанию всё)
     const enabled = new Set(SECTIONS.map(s=>s.key));
+    let fullData = null;
 
     function sectionOf(url){
       for (const s of SECTIONS){
@@ -70,7 +86,6 @@
       }
       return 'other';
     }
-
     function colorOf(sectionKey){
       const s = SECTIONS.find(x=>x.key===sectionKey) || SECTIONS[SECTIONS.length-1];
       return s.color;
@@ -79,11 +94,10 @@
     function renderFilters(){
       filtersEl.innerHTML = '';
       for (const s of SECTIONS){
-        const id = `f_${s.key}`;
         const checked = enabled.has(s.key) ? 'checked' : '';
         const wrap = document.createElement('label');
         wrap.className = 'pill';
-        wrap.innerHTML = `<input type="checkbox" id="${id}" ${checked}/> ${s.label}`;
+        wrap.innerHTML = `<input type="checkbox" ${checked}/> ${s.label}`;
         wrap.querySelector('input').addEventListener('change', (e)=>{
           if (e.target.checked) enabled.add(s.key);
           else enabled.delete(s.key);
@@ -93,56 +107,74 @@
       }
     }
 
-    let fullData = null;
-
+    // --- 3D graph setup
     const Graph = ForceGraph3D()(document.getElementById('graph'))
       .backgroundColor('#0b0f14')
-      .nodeLabel(n => `${n.section}\n${n.id}`)   // tooltip: раздел + url
-      .nodeThreeObject(node => {
-        // маленькая сфера
-        const geo = new THREE.SphereGeometry(2.0, 10, 10);
-        const mat = new THREE.MeshBasicMaterial({ color: colorOf(node.section) });
-        return new THREE.Mesh(geo, mat);
-      })
       .linkOpacity(0.12)
-      .linkDirectionalParticles(0)
       .onNodeClick(node => focusNode(node))
       .onNodeRightClick(node => window.open(node.id, '_blank'));
 
+    // node render: размер зависит от indegree
+    Graph.nodeThreeObject(node => {
+      const r = node.size || 2.0; // радиус
+      const geo = new THREE.SphereGeometry(r, 12, 12);
+      const mat = new THREE.MeshBasicMaterial({ color: colorOf(node.section) });
+      return new THREE.Mesh(geo, mat);
+    });
+
+    // tooltip: раздел + url + in/out
+    Graph.nodeLabel(n =>
+      `${n.section}\n${n.id}\nIN: ${n.in || 0} | OUT: ${n.out || 0}`
+    );
+
     function focusNode(node){
-      const distance = 140;
+      const distance = 160;
       const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z);
       Graph.cameraPosition(
         { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
         node,
         800
       );
-      sel.innerHTML = `Selected: <code>${node.id}</code> <span style="opacity:.8">(${node.section})</span>`;
+      sel.innerHTML =
+        `Selected: <code>${node.id}</code> ` +
+        `<span style="opacity:.8">(${node.section}) IN=${node.in||0} OUT=${node.out||0}</span>`;
     }
 
-    function resetView(){
-      sel.innerHTML = '';
-      searchEl.value = '';
+    function setOnlySection(sectionKey){
+      enabled.clear();
+      enabled.add(sectionKey);
+      renderFilters();
+      applyFilter();
+    }
+
+    function setAll(){
       enabled.clear();
       SECTIONS.forEach(s=>enabled.add(s.key));
       renderFilters();
+      applyFilter(true);
+    }
+
+    function reset(){
+      sel.innerHTML = '';
+      searchEl.value = '';
+      setAll();
       if (fullData) Graph.graphData(fullData);
     }
-    window.resetView = resetView;
 
-    function applyFilter(){
+    function applyFilter(updateStats=false){
       if (!fullData) return;
-      const okNode = (n)=> enabled.has(n.section);
 
-      // фильтруем узлы
+      const okNode = (n)=> enabled.has(n.section);
       const nodes = fullData.nodes.filter(okNode);
       const nodeSet = new Set(nodes.map(n=>n.id));
-
-      // фильтруем связи по существующим узлам
       const links = fullData.links.filter(l => nodeSet.has(l.source) && nodeSet.has(l.target));
 
       Graph.graphData({nodes, links});
-      stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
+      if (updateStats){
+        stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
+      } else {
+        stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
+      }
     }
 
     function findAndFocus(substr){
@@ -156,37 +188,86 @@
         return;
       }
 
-      // включим нужный раздел, чтобы он точно был виден
+      // включим его секцию, чтобы точно показывалось
       enabled.add(node.section);
       renderFilters();
       applyFilter();
 
-      // после фильтра нужно взять текущий объект ноды (граф пересобран)
       const cur = Graph.graphData().nodes.find(n => n.id === node.id);
       if (cur) focusNode(cur);
     }
 
-    btn.addEventListener('click', ()=> findAndFocus(searchEl.value));
-    searchEl.addEventListener('keydown', (e)=>{
-      if (e.key === 'Enter') findAndFocus(searchEl.value);
-    });
+    // Hubs: top 5% by IN
+    function showTopHubs(percent=5){
+      if (!fullData) return;
 
+      const nodesSorted = [...fullData.nodes].sort((a,b)=> (b.in||0) - (a.in||0));
+      const k = Math.max(10, Math.floor(nodesSorted.length * (percent/100)));
+      const top = new Set(nodesSorted.slice(0, k).map(n=>n.id));
+
+      const nodes = fullData.nodes.filter(n => top.has(n.id));
+      const nodeSet = new Set(nodes.map(n=>n.id));
+      const links = fullData.links.filter(l => nodeSet.has(l.source) && nodeSet.has(l.target));
+
+      Graph.graphData({nodes, links});
+      stats.innerHTML = `Hubs top ${percent}%: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
+      sel.innerHTML = `Mode: <b>Hubs top ${percent}%</b>`;
+    }
+
+    // UI events
+    btnFocus.addEventListener('click', ()=> findAndFocus(searchEl.value));
+    searchEl.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') findAndFocus(searchEl.value); });
+
+    btnReset.addEventListener('click', reset);
+    btnAll.addEventListener('click', setAll);
+    btnJobs.addEventListener('click', ()=> setOnlySection('jobs'));
+    btnArticles.addEventListener('click', ()=> setOnlySection('articles'));
+    btnNews.addEventListener('click', ()=> setOnlySection('news'));
+    btnEmployer.addEventListener('click', ()=> setOnlySection('employer'));
+    btnHubs.addEventListener('click', ()=> showTopHubs(5));
+
+    // Load data
     fetch('./graph.json')
       .then(r => r.json())
       .then(data => {
-        // Добавим поле section всем узлам
-        data.nodes.forEach(n => n.section = sectionOf(n.id));
+        // section + degrees
+        const byId = new Map();
+        data.nodes.forEach(n => {
+          n.section = sectionOf(n.id);
+          n.in = 0; n.out = 0;
+          byId.set(n.id, n);
+        });
 
-        // Для удобства links должны быть строками (source/target)
-        // (у тебя они уже строки — отлично)
+        // links: ensure source/target strings and count degrees
+        data.links.forEach(l => {
+          const s = (typeof l.source === 'string') ? l.source : l.source.id;
+          const t = (typeof l.target === 'string') ? l.target : l.target.id;
+          l.source = s; l.target = t;
+
+          const sn = byId.get(s);
+          const tn = byId.get(t);
+          if (sn) sn.out += 1;
+          if (tn) tn.in += 1;
+        });
+
+        // size scaling by indegree
+        const ins = data.nodes.map(n=>n.in||0).sort((a,b)=>a-b);
+        const p50 = ins[Math.floor(ins.length*0.50)] || 1;
+        const p90 = ins[Math.floor(ins.length*0.90)] || (p50+1);
+
+        data.nodes.forEach(n=>{
+          // radius 2..8 примерно
+          const v = n.in || 0;
+          const norm = Math.min(1, (v / Math.max(1, p90)));
+          n.size = 2 + norm * 6;
+        });
+
         fullData = data;
-
-        // стартовые метрики
-        stats.innerHTML = `Loaded: <b>${data.nodes.length}</b> nodes | <b>${data.links.length}</b> links`;
         renderFilters();
-        Graph.graphData(data);
 
-        // чуть стабильнее раскладка
+        Graph.graphData(fullData);
+        stats.innerHTML = `Loaded: <b>${fullData.nodes.length}</b> nodes | <b>${fullData.links.length}</b> links`;
+
         Graph.d3Force('charge').strength(-55);
         Graph.d3Force('link').distance(26);
       })
