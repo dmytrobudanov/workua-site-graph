@@ -43,6 +43,25 @@
       <button class="btn" id="btnHubs">Hubs top 5%</button>
     </div>
 
+    <div class="row">
+      <label class="pill">
+        <input type="checkbox" id="chkHideLeaf" checked />
+        hide leaf (IN ≤ 1)
+      </label>
+
+      <label class="pill">
+        Min IN:
+        <input type="range" id="rngMinIn" min="0" max="50" value="0" style="vertical-align:middle; width:140px;" />
+        <span id="lblMinIn" class="small">0</span>
+      </label>
+
+      <label class="pill">
+        <input type="checkbox" id="chkHighlightHubs" checked />
+        highlight hubs (top 5%)
+      </label>
+    </div>
+
+
     <div class="row small" id="filters"></div>
     <div id="sel" class="small" style="margin-top:8px;"></div>
   </div>
@@ -66,6 +85,10 @@
     const btnNews = document.getElementById('btnNews');
     const btnEmployer = document.getElementById('btnEmployer');
     const btnHubs = document.getElementById('btnHubs');
+    const chkHideLeaf = document.getElementById('chkHideLeaf');
+    const rngMinIn = document.getElementById('rngMinIn');
+    const lblMinIn = document.getElementById('lblMinIn');
+    const chkHighlightHubs = document.getElementById('chkHighlightHubs');
 
     // Разделы + цвета
     const SECTIONS = [
@@ -118,7 +141,10 @@
     Graph.nodeThreeObject(node => {
       const r = node.size || 2.0; // радиус
       const geo = new THREE.SphereGeometry(r, 12, 12);
-      const mat = new THREE.MeshBasicMaterial({ color: colorOf(node.section) });
+      const hubColor = 0xff6b6b; // цвет хабов
+      const baseColor = colorOf(node.section);
+      const c = (chkHighlightHubs && chkHighlightHubs.checked && node.isHub) ? hubColor : baseColor;
+      const mat = new THREE.MeshBasicMaterial({ color: c });
       return new THREE.Mesh(geo, mat);
     });
 
@@ -127,18 +153,48 @@
       `${n.section}\n${n.id}\nIN: ${n.in || 0} | OUT: ${n.out || 0}`
     );
 
+
+
+
     function focusNode(node){
       const distance = 160;
       const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z);
+
       Graph.cameraPosition(
         { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
         node,
         800
       );
-      sel.innerHTML =
-        `Selected: <code>${node.id}</code> ` +
-        `<span style="opacity:.8">(${node.section}) IN=${node.in||0} OUT=${node.out||0}</span>`;
+
+      const url = node.id;
+      sel.innerHTML = `
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <span>Selected:</span>
+          <a href="${url}" target="_blank" rel="noopener noreferrer"
+             style="color:#9bd; text-decoration:underline; word-break:break-all;">
+            ${url}
+          </a>
+          <span style="opacity:.8">(${node.section}) IN=${node.in||0} OUT=${node.out||0}</span>
+          <button class="btn" id="copyLinkBtn" style="padding:4px 8px;">Copy</button>
+        </div>
+      `;
+
+      // кнопка копирования
+      const btn = document.getElementById("copyLinkBtn");
+      if (btn) {
+        btn.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(url);
+            btn.textContent = "Copied!";
+            setTimeout(() => (btn.textContent = "Copy"), 1200);
+          } catch (e) {
+            // fallback: выделить текст
+            prompt("Copy URL:", url);
+          }
+        });
+      }
     }
+
 
     function setOnlySection(sectionKey){
       enabled.clear();
@@ -159,23 +215,38 @@
       searchEl.value = '';
       setAll();
       if (fullData) Graph.graphData(fullData);
+      if (chkHideLeaf) chkHideLeaf.checked = true;
+      if (chkHighlightHubs) chkHighlightHubs.checked = true;
+      if (rngMinIn) rngMinIn.value = 0;
+      if (lblMinIn) lblMinIn.textContent = "0";
     }
+
 
     function applyFilter(updateStats=false){
       if (!fullData) return;
 
-      const okNode = (n)=> enabled.has(n.section);
+      const minIn = Number(rngMinIn?.value || 0);
+      if (lblMinIn) lblMinIn.textContent = String(minIn);
+
+      const hideLeaf = !!(chkHideLeaf && chkHideLeaf.checked);
+
+      const okNode = (n)=> {
+        if (!enabled.has(n.section)) return false;
+        if (n.in < minIn) return false;
+        if (hideLeaf && (n.in <= 1)) return false;
+        return true;
+      };
+
       const nodes = fullData.nodes.filter(okNode);
       const nodeSet = new Set(nodes.map(n=>n.id));
       const links = fullData.links.filter(l => nodeSet.has(l.source) && nodeSet.has(l.target));
 
       Graph.graphData({nodes, links});
-      if (updateStats){
-        stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
-      } else {
-        stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links`;
-      }
+
+      stats.innerHTML = `Showing: <b>${nodes.length}</b> nodes | <b>${links.length}</b> links` +
+        ` <span style="opacity:.75">| minIN=${minIn}${hideLeaf ? ', hideLeaf' : ''}</span>`;
     }
+
 
     function findAndFocus(substr){
       if (!fullData) return;
@@ -217,6 +288,13 @@
     // UI events
     btnFocus.addEventListener('click', ()=> findAndFocus(searchEl.value));
     searchEl.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') findAndFocus(searchEl.value); });
+    chkHideLeaf.addEventListener('change', ()=> applyFilter(true));
+    chkHighlightHubs.addEventListener('change', ()=> {
+      // пересоздаём объекты, чтобы перекрасилось
+      Graph.nodeThreeObject(Graph.nodeThreeObject());
+      applyFilter(false);
+    });
+    rngMinIn.addEventListener('input', ()=> applyFilter(true));
 
     btnReset.addEventListener('click', reset);
     btnAll.addEventListener('click', setAll);
@@ -227,7 +305,7 @@
     btnHubs.addEventListener('click', ()=> showTopHubs(5));
 
     // Load data
-    fetch('./graph.json')
+    fetch('./graph_clean_strict.json')
       .then(r => r.json())
       .then(data => {
         // section + degrees
@@ -237,6 +315,12 @@
           n.in = 0; n.out = 0;
           byId.set(n.id, n);
         });
+
+        // --- hubs: top 5% by IN (для подсветки)
+        const nodesSorted = [...data.nodes].sort((a,b)=> (b.in||0) - (a.in||0));
+        const hubK = Math.max(10, Math.floor(nodesSorted.length * 0.05));
+        const hubSet = new Set(nodesSorted.slice(0, hubK).map(n=>n.id));
+        data.nodes.forEach(n => n.isHub = hubSet.has(n.id));
 
         // links: ensure source/target strings and count degrees
         data.links.forEach(l => {
